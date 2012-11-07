@@ -20,6 +20,7 @@
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libswscale/swscale.h>
+#include <sys/time.h>
 
 #include <SDL.h>
 #include <SDL_thread.h>
@@ -32,33 +33,36 @@
 
 int main(int argc, char *argv[]) {
     AVFormatContext *pFormatCtx = NULL;
-    int             i, videoStream;
     AVCodecContext  *pCodecCtx = NULL;
     AVCodec         *pCodec = NULL;
     AVFrame         *pFrame = NULL; 
-    AVPacket        packet;
-    int             frameFinished;
-    //float           aspect_ratio;
-
     AVDictionary    *optionsDict = NULL;
-    struct SwsContext *sws_ctx = NULL;
+    AVPacket        packet;
+
+    struct          SwsContext *sws_ctx = NULL;
 
     SDL_Overlay     *bmp = NULL;
     SDL_Surface     *screen = NULL;
     SDL_Rect        rect;
     SDL_Event       event;
 
+    int             i, videoStream;
+    int             frameFinished;
+    int             renderFrameCount;
+    int             duration_msec, fps = 0;
+
+    struct timeval tv1;
+    struct timeval tv2;
+
     if(argc < 2) {
         fprintf(stderr, "Usage: test <file>\n");
         exit(1);
     }
+
+    fprintf("video file: %s\n", argv[1]);
+
     // Register all formats and codecs
     av_register_all();
-
-    if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER)) {
-        fprintf(stderr, "Could not initialize SDL - %s\n", SDL_GetError());
-        exit(1);
-    }
 
     // Open video file
     if(avformat_open_input(&pFormatCtx, argv[1], NULL, NULL)!=0)
@@ -69,24 +73,26 @@ int main(int argc, char *argv[]) {
         return -1; // Couldn't find stream information
 
     // Dump information about file onto standard error
+    // This is just for debug use.
     av_dump_format(pFormatCtx, 0, argv[1], 0);
 
     // Find the first video stream
     videoStream=-1;
-    for(i=0; i<pFormatCtx->nb_streams; i++)
+    for(i=0; i < pFormatCtx->nb_streams; i++){
         if(pFormatCtx->streams[i]->codec->codec_type==AVMEDIA_TYPE_VIDEO) {
             videoStream=i;
             break;
         }
+    }
 
     if(videoStream==-1)
         return -1; // Didn't find a video stream
 
     // Get a pointer to the codec context for the video stream
-    pCodecCtx=pFormatCtx->streams[videoStream]->codec;
+    pCodecCtx = pFormatCtx->streams[videoStream]->codec;
 
     // Find the decoder for the video stream
-    pCodec=avcodec_find_decoder(pCodecCtx->codec_id);
+    pCodec = avcodec_find_decoder(pCodecCtx->codec_id);
     if(pCodec==NULL) {
         fprintf(stderr, "Unsupported codec!\n");
         return -1; // Codec not found
@@ -98,6 +104,12 @@ int main(int argc, char *argv[]) {
 
     // Allocate video frame
     pFrame=avcodec_alloc_frame();
+
+    // SDL init
+    if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER)) {
+        fprintf(stderr, "Could not initialize SDL - %s\n", SDL_GetError());
+        exit(1);
+    }
 
     // Make a screen to put our video
 #ifndef __DARWIN__
@@ -131,8 +143,10 @@ int main(int argc, char *argv[]) {
          NULL
         );
 
-    // Read frames and save first five frames to disk
-    i=0;
+    gettimeofday(&tv1, NULL);
+    renderFrameCount = 0;
+
+    // read frame, decode it, scale it and send to SDL for render.
     while(av_read_frame(pFormatCtx, &packet)>=0) {
         // Is this a packet from the video stream?
         if(packet.stream_index==videoStream) {
@@ -172,12 +186,17 @@ int main(int argc, char *argv[]) {
                 rect.w = pCodecCtx->width;
                 rect.h = pCodecCtx->height;
                 SDL_DisplayYUVOverlay(bmp, &rect);
+                renderFrameCount ++;
 
+                //to make video render slowly, about 25fps.
+                usleep(40 * 1000);
             }
         }
 
+
         // Free the packet that was allocated by av_read_frame
         av_free_packet(&packet);
+
         SDL_PollEvent(&event);
 
         switch(event.type) {
@@ -191,6 +210,12 @@ int main(int argc, char *argv[]) {
         }
 
     }
+
+    gettimeofday(&tv2, NULL);
+    duration_msec = (tv2.tv_sec - tv1.tv_sec) * 1000 + (tv2.tv_usec - tv1.tv_usec) / 1000;
+    fps = renderFrameCount * 1000 / duration_msec;
+
+    fprintf(stderr, "We totally render %d frames, fps: %d\n", renderFrameCount, fps);
 
     // Free the YUV frame
     av_free(pFrame);
