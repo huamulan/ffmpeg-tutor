@@ -50,18 +50,19 @@ void packet_queue_init(PacketQueue *q) {
     q->mutex = SDL_CreateMutex();
     q->cond = SDL_CreateCond();
 }
+
 int packet_queue_put(PacketQueue *q, AVPacket *pkt) {
 
     AVPacketList *pkt1;
     if(av_dup_packet(pkt) < 0) {
         return -1;
     }
+
     pkt1 = av_malloc(sizeof(AVPacketList));
     if (!pkt1)
         return -1;
     pkt1->pkt = *pkt;
     pkt1->next = NULL;
-
 
     SDL_LockMutex(q->mutex);
 
@@ -77,15 +78,15 @@ int packet_queue_put(PacketQueue *q, AVPacket *pkt) {
     SDL_UnlockMutex(q->mutex);
     return 0;
 }
-static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block)
-{
+
+static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block) {
+	
     AVPacketList *pkt1;
     int ret;
 
     SDL_LockMutex(q->mutex);
 
     for(;;) {
-
         if(quit) {
             ret = -1;
             break;
@@ -102,13 +103,16 @@ static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block)
             av_free(pkt1);
             ret = 1;
             break;
+
         } else if (!block) {
             ret = 0;
             break;
+
         } else {
             SDL_CondWait(q->cond, q->mutex);
         }
     }
+
     SDL_UnlockMutex(q->mutex);
     return ret;
 }
@@ -126,6 +130,7 @@ int audio_decode_frame(AVCodecContext *aCodecCtx, uint8_t *audio_buf, int buf_si
         while(audio_pkt_size > 0) {
             int got_frame = 0;
             len1 = avcodec_decode_audio4(aCodecCtx, &frame, &got_frame, &pkt);
+
             if(len1 < 0) {
                 /* if error, skip frame */
                 audio_pkt_size = 0;
@@ -133,6 +138,7 @@ int audio_decode_frame(AVCodecContext *aCodecCtx, uint8_t *audio_buf, int buf_si
             }
             audio_pkt_data += len1;
             audio_pkt_size -= len1;
+
             if (got_frame)
             {
                 data_size = 
@@ -153,8 +159,10 @@ int audio_decode_frame(AVCodecContext *aCodecCtx, uint8_t *audio_buf, int buf_si
             /* We have data, return it and come back for more later */
             return data_size;
         }
-        if(pkt.data)
+
+        if(pkt.data) {
             av_free_packet(&pkt);
+        }
 
         if(quit) {
             return -1;
@@ -163,6 +171,7 @@ int audio_decode_frame(AVCodecContext *aCodecCtx, uint8_t *audio_buf, int buf_si
         if(packet_queue_get(&audioq, &pkt, 1) < 0) {
             return -1;
         }
+
         audio_pkt_data = pkt.data;
         audio_pkt_size = pkt.size;
     }
@@ -190,6 +199,7 @@ void audio_callback(void *userdata, Uint8 *stream, int len) {
             }
             audio_buf_index = 0;
         }
+
         len1 = audio_buf_size - audio_buf_index;
         if(len1 > len)
             len1 = len;
@@ -202,16 +212,15 @@ void audio_callback(void *userdata, Uint8 *stream, int len) {
 
 int main(int argc, char *argv[]) {
     AVFormatContext *pFormatCtx = NULL;
-    int             i, videoStream, audioStream;
     AVCodecContext  *pCodecCtx = NULL;
     AVCodec         *pCodec = NULL;
     AVFrame         *pFrame = NULL; 
-    AVPacket        packet;
-    int             frameFinished;
-    //float           aspect_ratio;
-
     AVCodecContext  *aCodecCtx = NULL;
     AVCodec         *aCodec = NULL;
+    AVPacket        packet;
+
+    int             frameFinished;
+    int             i, videoStream, audioStream;
 
     SDL_Overlay     *bmp = NULL;
     SDL_Surface     *screen = NULL;
@@ -224,16 +233,12 @@ int main(int argc, char *argv[]) {
     AVDictionary        *audioOptionsDict   = NULL;
 
     if(argc < 2) {
-        fprintf(stderr, "Usage: test <file>\n");
+        fprintf(stderr, "Usage: %s <file>\n", argv[0]);
         exit(1);
     }
+
     // Register all formats and codecs
     av_register_all();
-
-    if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER)) {
-        fprintf(stderr, "Could not initialize SDL - %s\n", SDL_GetError());
-        exit(1);
-    }
 
     // Open video file
     if(avformat_open_input(&pFormatCtx, argv[1], NULL, NULL)!=0)
@@ -274,10 +279,20 @@ int main(int argc, char *argv[]) {
     wanted_spec.callback = audio_callback;
     wanted_spec.userdata = aCodecCtx;
 
+    if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER)) {
+        fprintf(stderr, "Could not initialize SDL - %s\n", SDL_GetError());
+        exit(1);
+    }
+
+    /* http://forums.libsdl.org/viewtopic.php?t=7609&sid=a1c1c35ffaeddba9cc0bf7854ddce6a0
+     * If face SDL_OpenAudio fail issue, please re-build SDL from source code
+     * http://www.libsdl.org/release/SDL-1.2.14.tar.gz
+     */
     if(SDL_OpenAudio(&wanted_spec, &spec) < 0) {
         fprintf(stderr, "SDL_OpenAudio: %s\n", SDL_GetError());
         return -1;
     }
+
     aCodec = avcodec_find_decoder(aCodecCtx->codec_id);
     if(!aCodec) {
         fprintf(stderr, "Unsupported codec!\n");
@@ -306,7 +321,6 @@ int main(int argc, char *argv[]) {
     pFrame=avcodec_alloc_frame();
 
     // Make a screen to put our video
-
 #ifndef __DARWIN__
     screen = SDL_SetVideoMode(pCodecCtx->width, pCodecCtx->height, 0, 0);
 #else
@@ -337,9 +351,7 @@ int main(int argc, char *argv[]) {
          NULL
         );
 
-
-    // Read frames and save first five frames to disk
-    i=0;
+    // Read frames 
     while(av_read_frame(pFormatCtx, &packet)>=0) {
         // Is this a packet from the video stream?
         if(packet.stream_index==videoStream) {
@@ -386,6 +398,7 @@ int main(int argc, char *argv[]) {
         } else {
             av_free_packet(&packet);
         }
+
         // Free the packet that was allocated by av_read_frame
         SDL_PollEvent(&event);
         switch(event.type) {
@@ -394,6 +407,7 @@ int main(int argc, char *argv[]) {
                 SDL_Quit();
                 exit(0);
                 break;
+
             default:
                 break;
         }
