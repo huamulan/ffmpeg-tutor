@@ -179,6 +179,7 @@ int audio_decode_frame(AVCodecContext *aCodecCtx, uint8_t *audio_buf, int buf_si
 
 void audio_callback(void *userdata, Uint8 *stream, int len) {
 
+//	fprintf(stderr, "---> audio_callback, stream: %p, len: %d\n", stream, len);
     AVCodecContext *aCodecCtx = (AVCodecContext *)userdata;
     int len1, audio_size;
 
@@ -267,7 +268,7 @@ int main(int argc, char *argv[]) {
     if(videoStream==-1)
         return -1; // Didn't find a video stream
     if(audioStream==-1)
-        return -1;
+        return -1; // Didn't find a audio stream
 
     aCodecCtx=pFormatCtx->streams[audioStream]->codec;
     // Set audio settings from codec info
@@ -392,10 +393,15 @@ int main(int argc, char *argv[]) {
                 rect.h = pCodecCtx->height;
                 SDL_DisplayYUVOverlay(bmp, &rect);
                 av_free_packet(&packet);
+
+                //to make video render slowly, about 25fps.
+                //usleep(40 * 1000);
+                SDL_Delay(40);
             }
         } else if(packet.stream_index==audioStream) {
             packet_queue_put(&audioq, &packet);
         } else {
+            fprintf(stderr, "right now, can not support stream other than audio and video");
             av_free_packet(&packet);
         }
 

@@ -17,7 +17,16 @@
 //
 // to play the video stream on your screen.
 
-
+/*
+ * The calling process.
+ * (1). main()->SDL_CreateThread(decode_thread, is), then main thread will wait for event to handle. new thread decode_thread will do the following things.
+ * (2). stream_component_open(audio), stream_component_open(video), in stream_component_open, we will set audio callback, find the right audio/video decoder, packet_queue_init, SDL_CreateThread(video_thread, is).
+ * (3). then we will enter main decode loop for(;;). In main decode loop, we will av_read_frame(), packet_queue_put()
+ * (4). audio_callback(void *userdata, Uint8 *stream, int len), audio_decode_frame, memcpy decoded data to stream, then SDL will render the audio raw data.
+ * (5). video_thread, packet_queue_get(), Decode video frame by avcodec_decode_video2(), queue_picture() enqueue decoded raw video frame to a queue.
+ * (6). via video_refresh_timer() to dequeue decoded raw video data and render it. schedule_refresh(), video_display()->SDL_DisplayYUVOverlay()
+ * (7). Aided function, schedule_refresh()->SDL_AddTimer(delay, sdl_refresh_timer_cb, is);
+ */
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -53,7 +62,6 @@ typedef struct PacketQueue {
     SDL_mutex *mutex;
     SDL_cond *cond;
 } PacketQueue;
-
 
 typedef struct VideoPicture {
     SDL_Overlay *bmp;
@@ -514,6 +522,11 @@ int stream_component_open(VideoState *is, int stream_index) {
             is->audio_buf_index = 0;
             memset(&is->audio_pkt, 0, sizeof(is->audio_pkt));
             packet_queue_init(&is->audioq);
+
+            /*
+             * This function pauses and unpauses the audio callback processing.
+             * It should be called with pause_on=0 after opening the audio device to start playing sound.
+             */
             SDL_PauseAudio(0);
             break;
 
@@ -614,7 +627,6 @@ int decode_thread(void *arg) {
     }
 
     // main decode loop
-
     for(;;) {
         if(is->quit) {
             break;
@@ -660,7 +672,6 @@ fail:
 int main(int argc, char *argv[]) {
 
     SDL_Event       event;
-
     VideoState      *is;
 
     is = av_mallocz(sizeof(VideoState));
@@ -669,6 +680,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Usage: %s <file>\n", argv[0]);
         exit(1);
     }
+
     // Register all formats and codecs
     av_register_all();
 
@@ -700,8 +712,8 @@ int main(int argc, char *argv[]) {
         av_free(is);
         return -1;
     }
-    for(;;) {
 
+    for(;;) {
         SDL_WaitEvent(&event);
         switch(event.type) {
             case FF_QUIT_EVENT:
