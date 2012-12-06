@@ -27,6 +27,8 @@
  * (6). via video_refresh_timer() to dequeue decoded raw video data and render it. schedule_refresh(), video_display()->SDL_DisplayYUVOverlay()
  * (7). Aided function, schedule_refresh()->SDL_AddTimer(delay, sdl_refresh_timer_cb, is);
  */
+/* This is fake audio/video sync */
+/* When cook, dts audio, the sound is abnormal. Maybe we need swreample here. */
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>

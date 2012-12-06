@@ -16,6 +16,20 @@
 //
 // to play the video.
 
+// http://dranger.com/ffmpeg/tutorial05.html
+/*
+ * (1). main()->SDL_CreateThread(decode_thread, is), then main thread will wait for event to handle. new thread decode_thread will do the following things.
+ * (2). stream_component_open(audio), stream_component_open(video), in stream_component_open, we will set audio callback, find the right audio/video decoder, packet_queue_init, SDL_CreateThread(video_thread, is).
+ * (3). then we will enter main decode loop for(;;). In main decode loop, we will av_read_frame(), packet_queue_put()
+ * (4). in stream_component_open(), we will set audio_callback(void *userdata, Uint8 *stream, int len), audio_decode_frame, memcpy decoded data to stream, then SDL will render the audio raw data. packet_queue_init(audio)
+ * (5). in stream_component_open(), we will SDL_CreateThread(video_thread, is); codecCtx->get_buffer = our_get_buffer; codecCtx->release_buffer = our_release_buffer;
+ * (6). video_thread, packet_queue_get(), avcodec_decode_video2(), synchronize_video()--->it will return pts. queue_picture()
+ * (7). schedule_refresh(), FF_REFRESH_EVENT, video_refresh_timer()
+ * (8). get_audio_clock(), return audio pts.
+ * (9). video_refresh_timer(), the main implementation for A/V sync. There is a tons of code here.
+ * (10). There is a bug in this code, we can not quit after finish playback a file. It's due to the implementation mechanism, can not fix it unless we make a log of changes.
+ */
+
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavformat/avio.h>
@@ -111,6 +125,7 @@ void packet_queue_init(PacketQueue *q) {
     q->mutex = SDL_CreateMutex();
     q->cond = SDL_CreateCond();
 }
+
 int packet_queue_put(PacketQueue *q, AVPacket *pkt) {
 
     AVPacketList *pkt1;
@@ -145,7 +160,6 @@ static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block)
     SDL_LockMutex(q->mutex);
 
     for(;;) {
-
         if(global_video_state->quit) {
             ret = -1;
             break;
@@ -166,6 +180,11 @@ static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block)
             ret = 0;
             break;
         } else {
+            /*
+             * FIXME: Bug here, can not quit after finish playback.
+             * We do not know whether there is no packet in queue, or the producer is too slow to put packet in queue.
+             * So we can not just return -1 here. Maybe after wait for a few ms, we can get packet again.
+             */
             SDL_CondWait(q->cond, q->mutex);
         }
     }
@@ -186,6 +205,7 @@ double get_audio_clock(VideoState *is) {
     if(bytes_per_sec) {
         pts -= (double)hw_buf_size / bytes_per_sec;
     }
+    fprintf(stderr, "audio clock, pts: %.8f\n", pts);
     return pts;
 }
 
@@ -220,6 +240,7 @@ int audio_decode_frame(VideoState *is, double *pts_ptr) {
             is->audio_pkt_size -= len1;
             if(data_size <= 0) {
                 /* No data yet, get more frames */
+                fprintf(stderr, "%s, No data yet, get more frames\n", __FUNCTION__);
                 continue;
             }
             pts = is->audio_clock;
@@ -235,10 +256,12 @@ int audio_decode_frame(VideoState *is, double *pts_ptr) {
             av_free_packet(pkt);
 
         if(is->quit) {
+			fprintf(stderr, "%s, is->quit\n", __FUNCTION__);
             return -1;
         }
         /* next packet */
         if(packet_queue_get(&is->audioq, pkt, 1) < 0) {
+			fprintf(stderr, "can not get packet from audio queue\n");
             return -1;
         }
         is->audio_pkt_data = pkt->data;
@@ -297,11 +320,9 @@ void video_display(VideoState *is) {
 
     SDL_Rect rect;
     VideoPicture *vp;
-    //AVPicture pict;
     float aspect_ratio;
     int w, h, x, y;
-    //int i;
-
+    
     vp = &is->pictq[is->pictq_rindex];
     if(vp->bmp) {
         if(is->video_st->codec->sample_aspect_ratio.num == 0) {
@@ -339,14 +360,17 @@ void video_refresh_timer(void *userdata) {
 
     if(is->video_st) {
         if(is->pictq_size == 0) {
+            fprintf(stderr, "%s pictq_size is 0, schedule another refresh\n", __FUNCTION__);
             schedule_refresh(is, 1);
         } else {
             vp = &is->pictq[is->pictq_rindex];
 
             delay = vp->pts - is->frame_last_pts; /* the pts from last time */
-            if(delay <= 0 || delay >= 1.0) {
+            fprintf(stderr, "delay 1: %.8f\n", delay);
+            if(delay <= 0 || delay >= 1.0) { //larger than 1 seconds or smaller than 0
                 /* if incorrect delay, use previous one */
                 delay = is->frame_last_delay;
+                fprintf(stderr, "delay 2: %.8f\n", delay);
             }
             /* save for next time */
             is->frame_last_delay = delay;
@@ -355,6 +379,7 @@ void video_refresh_timer(void *userdata) {
             /* update delay to sync to audio */
             ref_clock = get_audio_clock(is);
             diff = vp->pts - ref_clock;
+            fprintf(stderr, "audio video diff: %.8f\n", diff);
 
             /* Skip or repeat the frame. Take delay into account
                FFPlay still doesn't "know if this is the best guess." */
@@ -369,13 +394,19 @@ void video_refresh_timer(void *userdata) {
             is->frame_timer += delay;
             /* computer the REAL delay */
             actual_delay = is->frame_timer - (av_gettime() / 1000000.0);
-            if(actual_delay < 0.010) {
+            fprintf(stderr, "actual_delay %.8f\n", actual_delay);
+            if(actual_delay < 0.010) { //smaller than 10 ms
                 /* Really it should skip the picture instead */
                 actual_delay = 0.010;
             }
-            schedule_refresh(is, (int)(actual_delay * 1000 + 0.5));
+            // Why add 0.5 here. I see many 0.5 in multimedia framework code, such as stagefright.
+            fprintf(stderr, "%s, delay: %.8f\n", __FUNCTION__, actual_delay*1000+0.5);
+            // Video is faster than audio, so we need a delay render.
+            // after we show a frame, we figure out when the next frame should be shown
+            schedule_refresh(is, (int)(actual_delay * 1000 + 0.5)); 
             /* show the picture! */
             video_display(is);
+            fprintf(stderr, "\n---------------------------------------------------------------------\n");
 
             /* update queue for next picture! */
             if(++is->pictq_rindex == VIDEO_PICTURE_QUEUE_SIZE) {
@@ -387,6 +418,7 @@ void video_refresh_timer(void *userdata) {
             SDL_UnlockMutex(is->pictq_mutex);
         }
     } else {
+        fprintf(stderr, "%s, schedule_refresh for another 100 ms\n", __FUNCTION__);
         schedule_refresh(is, 100);
     }
 }
@@ -429,8 +461,11 @@ int queue_picture(VideoState *is, AVFrame *pFrame, double pts) {
     }
     SDL_UnlockMutex(is->pictq_mutex);
 
-    if(is->quit)
+    if(is->quit) {
+        fprintf(stderr, "%s, is->quit", __FUNCTION__);
         return -1;
+    }
+        
 
     // windex is set to 0 initially
     vp = &is->pictq[is->pictq_windex];
@@ -502,8 +537,13 @@ int queue_picture(VideoState *is, AVFrame *pFrame, double pts) {
     return 0;
 }
 
+/* 
+ * we account for repeated frames in this function
+ * ?
+ * Can not understand what is repeated frames.
+ */
 double synchronize_video(VideoState *is, AVFrame *src_frame, double pts) {
-
+    
     double frame_delay;
 
     if(pts != 0) {
@@ -518,6 +558,7 @@ double synchronize_video(VideoState *is, AVFrame *src_frame, double pts) {
     /* if we are repeating a frame, adjust clock accordingly */
     frame_delay += src_frame->repeat_pict * (frame_delay * 0.5);
     is->video_clock += frame_delay;
+    // fprintf(stderr, "%s, pts: %.8f\n", __FUNCTION__, pts);
     return pts;
 }
 uint64_t global_video_pkt_pts = AV_NOPTS_VALUE;
@@ -529,12 +570,16 @@ uint64_t global_video_pkt_pts = AV_NOPTS_VALUE;
 int our_get_buffer(struct AVCodecContext *c, AVFrame *pic) {
     int ret = avcodec_default_get_buffer(c, pic);
     uint64_t *pts = av_malloc(sizeof(uint64_t));
+    // We set the wrong value here: global_video_pkt_pts
     *pts = global_video_pkt_pts;
     pic->opaque = pts;
     return ret;
 }
+
 void our_release_buffer(struct AVCodecContext *c, AVFrame *pic) {
-    if(pic) av_freep(&pic->opaque);
+    if(pic) {
+        av_freep(&pic->opaque);
+    }
     avcodec_default_release_buffer(c, pic);
 }
 
@@ -550,6 +595,7 @@ int video_thread(void *arg) {
     for(;;) {
         if(packet_queue_get(&is->videoq, packet, 1) < 0) {
             // means we quit getting packets
+            fprintf(stderr, "%s, can not get packet from video queue\n", __FUNCTION__);
             break;
         }
         pts = 0;
@@ -573,6 +619,7 @@ int video_thread(void *arg) {
         if(frameFinished) {
             pts = synchronize_video(is, pFrame, pts);
             if(queue_picture(is, pFrame, pts) < 0) {
+                fprintf(stderr, "%s, can not queue_picture\n", __FUNCTION__);
                 break;
             }
         }
@@ -630,6 +677,7 @@ int stream_component_open(VideoState *is, int stream_index) {
             packet_queue_init(&is->audioq);
             SDL_PauseAudio(0);
             break;
+
         case AVMEDIA_TYPE_VIDEO:
             is->videoStream = stream_index;
             is->video_st = pFormatCtx->streams[stream_index];
@@ -656,6 +704,7 @@ int stream_component_open(VideoState *is, int stream_index) {
             codecCtx->get_buffer = our_get_buffer;
             codecCtx->release_buffer = our_release_buffer;
             break;
+
         default:
             break;
     }
@@ -731,7 +780,6 @@ int decode_thread(void *arg) {
     }
 
     // main decode loop
-
     for(;;) {
         if(is->quit) {
             break;
@@ -783,7 +831,7 @@ int main(int argc, char *argv[]) {
     is = av_mallocz(sizeof(VideoState));
 
     if(argc < 2) {
-        fprintf(stderr, "Usage: test <file>\n");
+        fprintf(stderr, "Usage: %s filepath\n", argv[0]);
         exit(1);
     }
     // Register all formats and codecs
@@ -834,12 +882,15 @@ int main(int argc, char *argv[]) {
                 SDL_Quit();
                 exit(0);
                 break;
+
             case FF_ALLOC_EVENT:
                 alloc_picture(event.user.data1);
                 break;
+
             case FF_REFRESH_EVENT:
                 video_refresh_timer(event.user.data1);
                 break;
+
             default:
                 break;
         }
