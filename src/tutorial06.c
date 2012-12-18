@@ -260,7 +260,8 @@ int synchronize_audio(VideoState *is, short *samples,
     n = 2 * is->audio_st->codec->channels;
 
     // If AV_SYNC_AUDIO_MASTER, that means we sync video with audio.
-    // So no need to adjust audio render, just render as samplea rate and channel count requires.
+    // So no need to adjust audio render, just render as samplea rate
+    // and channel count requires.
     static int syncAudioFlag = 1;
     if(is->av_sync_type != AV_SYNC_AUDIO_MASTER) {
         if(1 == syncAudioFlag){
@@ -282,13 +283,17 @@ int synchronize_audio(VideoState *is, short *samples,
                 is->audio_diff_avg_count++;
             } else {
                 /* 
-                 * Please refer to http://dranger.com/ffmpeg/tutorial06.html to understand this complex code logic.
+                 * Please refer to http://dranger.com/ffmpeg/tutorial06.html to understand 
+                 * this complex code logic.
                  * 
                  * We're going to take an average of how far each of those have been out of sync.
-                 * So for example, the first call might have shown we were out of sync by 40ms, the next by 50ms, and so on. 
-                 * But we're not going to take a simple average because the most recent values are more important than the previous ones.
-                 * So we're going to use a fractional coefficient, say c, and sum the differences like this: diff_sum = new_diff + diff_sum*c.
-                 * When we are ready to find the average difference, we simply calculate avg_diff = diff_sum * (1-c).
+                 * So for example, the first call might have shown we were out of sync by 40ms,
+                 * the next by 50ms, and so on. But we're not going to take a simple average
+                 * because the most recent values are more important than the previous ones.
+                 * So we're going to use a fractional coefficient, say c, 
+                 * and sum the differences like this: diff_sum = new_diff + diff_sum*c.
+                 * When we are ready to find the average difference,
+                 * we simply calculate avg_diff = diff_sum * (1-c).
                  */ 
                 avg_diff = is->audio_diff_cum * (1.0 - is->audio_diff_avg_coef);
                 if(fabs(avg_diff) >= is->audio_diff_threshold) {
